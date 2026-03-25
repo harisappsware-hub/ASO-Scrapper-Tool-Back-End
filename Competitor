@@ -1,0 +1,83 @@
+"""
+Competitor Analysis Module
+Finds competitor apps and compares keyword overlap.
+"""
+import asyncio
+import random
+from typing import Dict, List, Set
+
+from scraper import GooglePlayScraper
+from keyword_engine import KeywordEngine
+
+
+class CompetitorAnalyzer:
+    def __init__(self):
+        self.scraper = GooglePlayScraper()
+        self.engine  = KeywordEngine()
+
+    async def analyze(
+        self,
+        main_app_id: str,
+        keywords: List[str],
+        main_keywords: Set[str],
+        country: str = "us",
+        max_competitors: int = 5
+    ) -> List[Dict]:
+        """Find competitor apps and analyze keyword overlap."""
+        loop = asyncio.get_event_loop()
+
+        # Find competitors via search
+        competitor_ids = set()
+        for kw in keywords[:3]:
+            apps = await loop.run_in_executor(
+                None,
+                lambda k=kw: self.scraper.search_apps(k, country, limit=5)
+            )
+            for app in apps:
+                if app["app_id"] != main_app_id:
+                    competitor_ids.add(app["app_id"])
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+        competitors = []
+        for app_id in list(competitor_ids)[:max_competitors]:
+            try:
+                app_url = f"https://play.google.com/store/apps/details?id={app_id}"
+                app_data = await self.scraper.scrape_app(app_url, country)
+                if not app_data:
+                    continue
+
+                comp_kw_data = self.engine.analyze(
+                    title=app_data.get("title", ""),
+                    short_desc=app_data.get("short_description", ""),
+                    long_desc=app_data.get("long_description", ""),
+                )
+                comp_kws = set(k["keyword"] for k in comp_kw_data["unigrams"])
+
+                overlap   = main_keywords & comp_kws
+                gaps      = comp_kws - main_keywords   # they have, you don't
+                unique_u  = main_keywords - comp_kws   # you have, they don't
+
+                competitors.append({
+                    "app_id":      app_id,
+                    "title":       app_data.get("title", app_id),
+                    "developer":   app_data.get("developer", ""),
+                    "rating":      app_data.get("rating"),
+                    "installs":    app_data.get("installs", ""),
+                    "icon_url":    app_data.get("icon_url", ""),
+                    "overlap_count":   len(overlap),
+                    "gap_count":       len(gaps),
+                    "overlapping_keywords": sorted(list(overlap))[:20],
+                    "keyword_gaps":        sorted(list(gaps))[:20],
+                    "your_unique_keywords": sorted(list(unique_u))[:20],
+                    "top_keywords": [
+                        k["keyword"] for k in comp_kw_data["unigrams"][:10]
+                    ],
+                })
+                await asyncio.sleep(random.uniform(0.5, 1.2))
+
+            except Exception:
+                continue
+
+        # Sort by overlap (most similar first)
+        competitors.sort(key=lambda x: x["overlap_count"], reverse=True)
+        return competitors
